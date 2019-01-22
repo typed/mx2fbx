@@ -13,8 +13,19 @@
 #include <map>
 #include "d3d9/d3d9.h"
 #include "d3d9/d3dx9tex.h"
+#include <fstream>
 
 using namespace std;
+
+static void Log(const char* src, ...)
+{
+	char buf[1024] = {0};
+	va_list argList;
+	va_start(argList, src);
+	vsnprintf(buf, sizeof(buf)-1, src, argList);
+	va_end(argList);
+	printf(buf);
+}
 
 static string GetPostfixName(const string& sz)
 {
@@ -48,17 +59,19 @@ static string ChangePostfixName(const string& filename, const string& postfixnam
 
 void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 {
-
-	FILE* h;
-	fopen_s(&h, lFilePath.Buffer(), "r");
-	int old = (int)ftell(h);
-	fseek(h, 0, 0);
-	fseek(h, 0, 2);
-	uint len = ftell(h);
-	fseek(h, old, 0);
-	uchar* buf = new uchar[len];
-	fread(buf, len, 1, h);
-	fclose(h);
+	uchar* buf = nullptr;
+	uint len = 0;
+	std::ifstream ifs;
+	ifs.open(lFilePath.Buffer(), std::ios_base::in | std::ios_base::binary);
+	if (ifs.is_open()) {
+		std::ifstream::pos_type old = ifs.tellg();
+		ifs.seekg(0, std::ios_base::end);
+		len = (uint)ifs.tellg();
+		ifs.seekg(old, std::ios_base::beg);
+		buf = new uchar[len];
+		ifs.read((char*)buf, len);
+		ifs.close();
+	}
 
 	MemoryStream ms(buf, len);
 	MemoryStream* pStream = &ms;
@@ -239,6 +252,8 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 					//pData->translation.setInterpolationType(INTERPOLATION_LINEAR);
 					//pData->rotation.setInterpolationType(INTERPOLATION_LINEAR);
 					//pData->scale.setInterpolationType(INTERPOLATION_LINEAR);
+
+					Log("Bones id=%d name=%s\n", i, bone.name.c_str());
 
 					uint nKeyframes = 0;
 					stream.read(&nKeyframes, sizeof(nKeyframes));
@@ -533,7 +548,8 @@ void ImportScene(const FbxString& lFilePath)
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	ImportScene("Res/MONKEYMAN/MONKEYMAN.MZ");
+	//ImportScene("Res/MONKEYMAN/MONKEYMAN.MZ");
+	ImportScene("Res/SWORDSMAN/Swordsman.MZ");
 	return 0;
 }
 
