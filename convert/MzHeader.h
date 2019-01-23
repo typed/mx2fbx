@@ -18,6 +18,16 @@ struct Vector3
 	float d_x, d_y, d_z;
 	Vector3(void) { d_x = d_y = d_z = 0.f; }
 	Vector3(float x, float y, float z) : d_x(x), d_y(y), d_z(z) {}
+	inline Vector3 operator - ( const Vector3& rkVector ) const
+	{
+		Vector3 kDiff;
+
+		kDiff.d_x = d_x - rkVector.d_x;
+		kDiff.d_y = d_y - rkVector.d_y;
+		kDiff.d_z = d_z - rkVector.d_z;
+
+		return kDiff;
+	}
 };
 
 struct Quaternion

@@ -7,7 +7,6 @@
 #include "GeometryUtility.h"
 #include "DataChunk.h"
 #include "MemoryStream.h"
-#include "FileStream.h"
 #include "MzHeader.h"
 #include <vector>
 #include <map>
@@ -16,6 +15,19 @@
 #include <fstream>
 
 using namespace std;
+
+static vector<_VertexData> s_aVertexData;
+static vector<MODELFACE> s_aFace;
+static vector<SUBMESH_V1_3> s_aSubMesh;
+static vector<MATERIAL> s_aMaterials;
+static vector<BoneData> s_aBoneData;
+static vector<MODELANIMATION> s_aAnimations;
+static FbxManager* s_pSdkManager = NULL;
+static FbxScene* s_pScene = NULL;
+static FbxString s_strFilePath;
+
+typedef std::map<uint, float> VERTEX_WEIGHT;
+typedef std::map<uint, VERTEX_WEIGHT > BONE_WEIGHT;
 
 static void Log(const char* src, ...)
 {
@@ -57,37 +69,98 @@ static string ChangePostfixName(const string& filename, const string& postfixnam
 		return ff + (newlf==""?"":(string)"."+newlf);
 }
 
-void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
+// Create a skeleton with 2 segments.
+static FbxNode* CreateSkeleton(const char* pName)
 {
-	uchar* buf = nullptr;
-	uint len = 0;
+	// Create skeleton root. 
+	FbxString lRootName(pName);
+	lRootName += "Root";
+	FbxSkeleton* lSkeletonRootAttribute = FbxSkeleton::Create(s_pScene, pName);
+	lSkeletonRootAttribute->SetSkeletonType(FbxSkeleton::eRoot);
+	FbxNode* lSkeletonRoot = FbxNode::Create(s_pScene,lRootName.Buffer());
+	lSkeletonRoot->SetNodeAttribute(lSkeletonRootAttribute);    
+	lSkeletonRoot->LclTranslation.Set(FbxVector4(0.0, -40.0, 0.0));
+
+	// Create skeleton first limb node. 
+	FbxString lLimbNodeName1(pName);
+	lLimbNodeName1 += "LimbNode1";
+	FbxSkeleton* lSkeletonLimbNodeAttribute1 = FbxSkeleton::Create(s_pScene,lLimbNodeName1);
+	lSkeletonLimbNodeAttribute1->SetSkeletonType(FbxSkeleton::eLimbNode);
+	lSkeletonLimbNodeAttribute1->Size.Set(1.0);
+	FbxNode* lSkeletonLimbNode1 = FbxNode::Create(s_pScene,lLimbNodeName1.Buffer());
+	lSkeletonLimbNode1->SetNodeAttribute(lSkeletonLimbNodeAttribute1);    
+	lSkeletonLimbNode1->LclTranslation.Set(FbxVector4(0.0, 40.0, 0.0));
+	lSkeletonLimbNode1->LclRotation.Set(FbxVector4(0, 0.0, 80.0));
+
+	// Create skeleton second limb node. 
+	FbxString lLimbNodeName2(pName);
+	lLimbNodeName2 += "LimbNode2";
+	FbxSkeleton* lSkeletonLimbNodeAttribute2 = FbxSkeleton::Create(s_pScene,lLimbNodeName2);
+	lSkeletonLimbNodeAttribute2->SetSkeletonType(FbxSkeleton::eLimbNode);
+	lSkeletonLimbNodeAttribute2->Size.Set(1.0);
+	FbxNode* lSkeletonLimbNode2 = FbxNode::Create(s_pScene,lLimbNodeName2.Buffer());
+	lSkeletonLimbNode2->SetNodeAttribute(lSkeletonLimbNodeAttribute2);    
+	lSkeletonLimbNode2->LclTranslation.Set(FbxVector4(0.0, 40.0, 0.0));
+
+	// Build skeleton node hierarchy. 
+	lSkeletonRoot->AddChild(lSkeletonLimbNode1);
+	lSkeletonLimbNode1->AddChild(lSkeletonLimbNode2);
+
+	return lSkeletonRoot;
+}
+
+static void SkinSkeleton(FbxSkin* pSkin, FbxNode* pNode, const BONE_WEIGHT& bw)
+{
+	uint boneid = (uint)pNode->GetUserDataPtr();
+	BONE_WEIGHT::const_iterator it = bw.find(boneid);
+	if (it != bw.end()) {
+		const VERTEX_WEIGHT& vw = it->second;
+		if (vw.size() > 0) {
+			FbxCluster* pCluster = FbxCluster::Create(s_pScene,"");
+			pCluster->SetLink(pNode);
+			pCluster->SetLinkMode(FbxCluster::eTotalOne);
+			pSkin->AddCluster(pCluster);
+			for (VERTEX_WEIGHT::const_iterator it1 = vw.begin(); it1 != vw.end(); it1++) {
+				uint vidx = it1->first;
+				float weight = it1->second;
+				pCluster->AddControlPointIndex(vidx, weight);
+			}
+			FbxAMatrix mat = pNode->EvaluateGlobalTransform();
+			pCluster->SetTransformLinkMatrix(mat);
+		}
+	}
+	for (int i = 0; i < pNode->GetChildCount(); i++) {
+		FbxNode* pNode1 = pNode->GetChild(i);
+		SkinSkeleton(pSkin, pNode1, bw);
+	}
+}
+
+void ImportMz()
+{
+	vector<uchar> aBuf;
 	std::ifstream ifs;
-	ifs.open(lFilePath.Buffer(), std::ios_base::in | std::ios_base::binary);
+	ifs.open(s_strFilePath.Buffer(), std::ios_base::in | std::ios_base::binary);
 	if (ifs.is_open()) {
 		std::ifstream::pos_type old = ifs.tellg();
 		ifs.seekg(0, std::ios_base::end);
-		len = (uint)ifs.tellg();
+		uint len = (uint)ifs.tellg();
 		ifs.seekg(old, std::ios_base::beg);
-		buf = new uchar[len];
-		ifs.read((char*)buf, len);
+		aBuf.resize(len);
+		ifs.read((char*)&aBuf.front(), len);
 		ifs.close();
 	}
 
-	MemoryStream ms(buf, len);
+	MemoryStream ms(&aBuf.front(), aBuf.size());
 	MemoryStream* pStream = &ms;
 	uint ver = 0;
 	DataChunk chunk;
 	DataChunk::stChunk* pChunk = chunk.beginChunk(pStream);
 
-	_VertexData* pVertexData = NULL;
-	uint nVerticeNum = 0;
-	MODELFACE* pFace = NULL;
-	uint nFace = 0;
-
-	vector<SUBMESH_V1_3> aSubMesh;
-	vector<MATERIAL> aMaterials;
-
-	vector<BoneData> aBoneData;
+	s_aVertexData.clear();
+	s_aFace.clear();
+	s_aMaterials.clear();
+	s_aBoneData.clear();
+	s_aSubMesh.clear();
 
 	while (pChunk)
 	{
@@ -106,14 +179,16 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 			break;
 		case 'MVTX':
 			{
-				nVerticeNum = stream.getLength() / sizeof(_VertexData);
-				pVertexData = (_VertexData*)stream.getBuffer();
+				uint nVerticeNum = stream.getLength() / sizeof(_VertexData);
+				s_aVertexData.resize(nVerticeNum);
+				memcpy((void*)&s_aVertexData.front(), stream.getBuffer(), s_aVertexData.size() * sizeof(_VertexData));
 			}
 			break;
 		case 'MFAC':
 			{
-				nFace = stream.getLength() / sizeof(MODELFACE);
-				pFace = (MODELFACE*)stream.getBuffer();
+				uint nFace = stream.getLength() / sizeof(MODELFACE);
+				s_aFace.resize(nFace);
+				memcpy((void*)&s_aFace.front(), stream.getBuffer(), s_aFace.size() * sizeof(MODELFACE));
 			}
 			break;
 		case 'MSUB':
@@ -124,7 +199,7 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 					SUBMESH_V1_3* pSubMesh = (SUBMESH_V1_3*)stream.getBuffer();
 					for (uint i = 0; i < nSubMesh; i++)
 					{
-						aSubMesh.push_back(pSubMesh[i]);
+						s_aSubMesh.push_back(pSubMesh[i]);
 					}
 				}
 			}
@@ -168,37 +243,39 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 
 						mat.textures.push_back(tex);
 					}
-					aMaterials.push_back(mat);
+					s_aMaterials.push_back(mat);
 				}
 			}
 			break;
 		case 'MANM':
 			{
-				//uint32 nAnims; 
-				//stream.read(&nAnims,sizeof(nAnims));
-				//MODELANIMATION *pAnims = (MODELANIMATION *)(stream.getBuffer() + stream.getPosition());
+				s_aAnimations.clear();
 
-				//for(uint i = 0;i < nAnims;i++)
-				//{
-				//	uchar AnimnameLen; 
-				//	stream.read(&AnimnameLen,sizeof(AnimnameLen));
-				//	char str[64];
-				//	stream.read(str,AnimnameLen);
-				//	str[AnimnameLen] = 0;
+				uint32 nAnims; 
+				stream.read(&nAnims,sizeof(nAnims));
 
-				//	uint startTime,endTime;
-				//	stream.read(&startTime,sizeof(startTime));
-				//	stream.read(&endTime,sizeof(endTime));
+				for (uint i = 0; i < nAnims; i++)
+				{
+					MODELANIMATION ani;
 
-				//	Animation *pAnimation = new Animation(startTime,endTime,true,str);
-				//	//modified by xxh 20091011， 下面那样写不好，会使得m_vAnimations和m_AnimationMap不一致，改为这样。
-				//	if( pAnimation)
-				//	{
-				//		m_vAnimations.push_back(pAnimation);
-				//		if( pAnimation && m_AnimationMap.find(pAnimation->getName() ) == m_AnimationMap.end() )
-				//			m_AnimationMap[pAnimation->getName() ] = pAnimation;
-				//	}
-				//}
+					uchar AnimnameLen; 
+					stream.read(&AnimnameLen,sizeof(AnimnameLen));
+					char str[64];
+					stream.read(str,AnimnameLen);
+					str[AnimnameLen] = 0;
+					ani.name = str;
+
+					uint startTime,endTime;
+					stream.read(&startTime,sizeof(startTime));
+					stream.read(&endTime,sizeof(endTime));
+					ani.startTime = startTime;
+					ani.endTime = endTime;
+
+					ani.loopType = 1;
+
+					s_aAnimations.push_back(ani);
+
+				}
 			}
 			break;
 		case 'MBON':
@@ -379,31 +456,143 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 
 					}
 
-					aBoneData.push_back(bone);
+					s_aBoneData.push_back(bone);
 				}
 			}
 		}
 		pChunk = chunk.nextChunk(pStream);
 	}
 
+}
+
+void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
+{
+	//动画
+	for (vector<MODELANIMATION>::iterator it = s_aAnimations.begin(); it != s_aAnimations.end(); it++) {
+		const MODELANIMATION& ma = *it;
+		FbxTime lTime;
+		int lKeyIndex = 0;
+		FbxAnimStack* pAnimStack = FbxAnimStack::Create(s_pScene, ma.name.c_str());
+		FbxAnimLayer* pAnimLayer = FbxAnimLayer::Create(s_pScene, "Base Layer");
+		pAnimStack->AddMember(pAnimLayer);
+		for (uint i = 0; i < s_aBoneData.size(); i++) {
+			const BoneData& bone = s_aBoneData[i];
+			auto it = mapNodeBones.find(i);
+			if (it != mapNodeBones.end()) {
+				FbxNode* pBone = it->second;
+
+				//平移
+				FbxAnimCurve* pCurveTransX = pBone->LclTranslation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
+				FbxAnimCurve* pCurveTransY = pBone->LclTranslation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
+				FbxAnimCurve* pCurveTransZ = pBone->LclTranslation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
+				if (pCurveTransX && pCurveTransY && pCurveTransZ) {
+					pCurveTransX->KeyModifyBegin();
+					pCurveTransY->KeyModifyBegin();
+					pCurveTransZ->KeyModifyBegin();
+					for (size_t j = 0; j < bone.keyframesTranslation.size(); j++) {
+						const ModelKeyframeTranslation& keyfrm = bone.keyframesTranslation[j];
+						lTime.SetSecondDouble(keyfrm.time/1000.f);
+						lKeyIndex = pCurveTransX->KeyAdd(lTime);
+						pCurveTransX->KeySetValue(lKeyIndex, keyfrm.v[0]);
+						pCurveTransX->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveTransY->KeyAdd(lTime);
+						pCurveTransY->KeySetValue(lKeyIndex, keyfrm.v[1]);
+						pCurveTransY->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveTransZ->KeyAdd(lTime);
+						pCurveTransZ->KeySetValue(lKeyIndex, keyfrm.v[2]);
+						pCurveTransZ->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+					}
+					pCurveTransX->KeyModifyEnd();
+					pCurveTransY->KeyModifyEnd();
+					pCurveTransZ->KeyModifyEnd();
+				}
+
+				//旋转
+				FbxAnimCurve* pCurveRotX = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
+				FbxAnimCurve* pCurveRotY = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
+				FbxAnimCurve* pCurveRotZ = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
+				if (pCurveRotX && pCurveRotY && pCurveRotZ) {
+					pCurveRotX->KeyModifyBegin();
+					pCurveRotY->KeyModifyBegin();
+					pCurveRotZ->KeyModifyBegin();
+					for (size_t j = 0; j < bone.keyframesRotation.size(); j++) {
+						const ModelKeyframeRotation& keyfrm = bone.keyframesRotation[j];
+						lTime.SetSecondDouble(keyfrm.time/1000.f);
+						FbxQuaternion fq(keyfrm.q[0], keyfrm.q[1], keyfrm.q[2], keyfrm.q[3]);
+						FbxVector4 rot; rot.SetXYZ(fq);
+						lKeyIndex = pCurveRotX->KeyAdd(lTime);
+						pCurveRotX->KeySetValue(lKeyIndex, rot[0]);
+						pCurveRotX->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveRotY->KeyAdd(lTime);
+						pCurveRotY->KeySetValue(lKeyIndex, rot[1]);
+						pCurveRotY->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveRotZ->KeyAdd(lTime);
+						pCurveRotZ->KeySetValue(lKeyIndex, rot[2]);
+						pCurveRotZ->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+					}
+					pCurveRotX->KeyModifyEnd();
+					pCurveRotY->KeyModifyEnd();
+					pCurveRotZ->KeyModifyEnd();
+				}
+
+				//缩放
+				FbxAnimCurve* pCurveSclX = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
+				FbxAnimCurve* pCurveSclY = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
+				FbxAnimCurve* pCurveSclZ = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
+				if (pCurveSclX && pCurveSclY && pCurveSclZ) {
+					pCurveSclX->KeyModifyBegin();
+					pCurveSclY->KeyModifyBegin();
+					pCurveSclZ->KeyModifyBegin();
+					for (size_t j = 0; j < bone.keyframesScale.size(); j++) {
+						const ModelKeyframeScale& keyfrm = bone.keyframesScale[j];
+						lTime.SetSecondDouble(keyfrm.time/1000.f);
+						lKeyIndex = pCurveSclX->KeyAdd(lTime);
+						pCurveSclX->KeySetValue(lKeyIndex, keyfrm.v[0]);
+						pCurveSclX->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveSclY->KeyAdd(lTime);
+						pCurveSclY->KeySetValue(lKeyIndex, keyfrm.v[1]);
+						pCurveSclY->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+						lKeyIndex = pCurveSclZ->KeyAdd(lTime);
+						pCurveSclZ->KeySetValue(lKeyIndex, keyfrm.v[2]);
+						pCurveSclZ->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
+					}
+					pCurveSclX->KeyModifyEnd();
+					pCurveSclY->KeyModifyEnd();
+					pCurveSclZ->KeyModifyEnd();
+				}
+
+			}
+		}
+
+	}
+}
+
+
+void ExportFbx_Mesh()
+{
+
 	//模型
 
-	FbxNode* pNodeMesh = FbxNode::Create(pScene, "Mesh");
-	pScene->GetRootNode()->AddChild(pNodeMesh);
+	//uint numSubMesh = s_aSubMesh.size();
+	uint numSubMesh = 1;
 
-	for (uint idx = 0; idx < aSubMesh.size(); idx++) {
+	for (uint idx = 0; idx < numSubMesh; idx++) {
 
-		const SUBMESH_V1_3& ms = aSubMesh[idx];
-		
-		FbxNode* pNode = FbxNode::Create(pScene, ms.name);
-		pNodeMesh->AddChild(pNode);
-		FbxMesh* pMesh = FbxMesh::Create(pScene, ms.name);
+		const SUBMESH_V1_3& ms = s_aSubMesh[idx];
+
+		s_pSdkManager = nullptr;
+		s_pScene = nullptr;
+		InitializeSdkObjects(s_pSdkManager, s_pScene);
+
+		FbxNode* pNode = FbxNode::Create(s_pScene, ms.name);
+		s_pScene->GetRootNode()->AddChild(pNode);
+		FbxMesh* pMesh = FbxMesh::Create(s_pScene, ms.name);
 		pNode->SetNodeAttribute(pMesh);
 
 		//顶点
 		pMesh->InitControlPoints(ms.vcount);
 		for (uint i = 0; i < ms.vcount; i++) {
-			const _VertexData& vd = pVertexData[ms.vstart + i];
+			const _VertexData& vd = s_aVertexData[ms.vstart + i];
 			FbxVector4 vec(vd.pos[0], vd.pos[1], vd.pos[2]);
 			pMesh->SetControlPointAt(vec, i);
 		}
@@ -412,7 +601,7 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 		uint face_start = ms.istart/3;
 		uint face_num = ms.icount/3;
 		for (uint i = 0; i < face_num; i++) {
-			const MODELFACE& face = pFace[face_start + i];
+			const MODELFACE& face = s_aFace[face_start + i];
 			pMesh->BeginPolygon();
 			pMesh->AddPolygon(face.index[0]-ms.vstart);
 			pMesh->AddPolygon(face.index[1]-ms.vstart);
@@ -425,7 +614,7 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 		pNormal->SetMappingMode(FbxGeometryElement::eByControlPoint);
 		pNormal->SetReferenceMode(FbxGeometryElement::eDirect);
 		for (uint i = 0; i < ms.vcount; i++) {
-			const _VertexData& vd = pVertexData[ms.vstart + i];
+			const _VertexData& vd = s_aVertexData[ms.vstart + i];
 			FbxVector4 vec(vd.normal[0], vd.normal[1], vd.normal[2]);
 			pNormal->GetDirectArray().Add(vec);
 		}
@@ -435,16 +624,16 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 		pUV1->SetMappingMode(FbxGeometryElement::eByControlPoint);
 		pUV1->SetReferenceMode(FbxGeometryElement::eDirect);
 		for (uint i = 0; i < ms.vcount; i++) {
-			const _VertexData& vd = pVertexData[ms.vstart + i];
+			const _VertexData& vd = s_aVertexData[ms.vstart + i];
 			//翻转V
 			FbxVector2 vec(vd.texcoords[0], 1.f - vd.texcoords[1]);
 			pUV1->GetDirectArray().Add(vec);
 		}
 
 		//材质
-		if (ms.matId < aMaterials.size()) {
+		if (ms.matId < s_aMaterials.size()) {
 
-			const MATERIAL& mat = aMaterials[ms.matId];
+			const MATERIAL& mat = s_aMaterials[ms.matId];
 
 			FbxSurfacePhong* pMaterial = FbxSurfacePhong::Create(pMesh->GetScene(), mat.name.c_str());
 
@@ -452,7 +641,7 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 			FbxDouble3 diffuse(1, 1, 1);
 			pMaterial->Diffuse.Set(diffuse);
 			pMaterial->DiffuseFactor = 1;
-		
+
 			//自发光
 			FbxDouble3 emissive(0, 0, 0);
 			pMaterial->Emissive.Set(emissive);
@@ -482,7 +671,8 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 
 				FbxFileTexture* pTexture = FbxFileTexture::Create(pMesh->GetScene(), "Diffuse Texture");
 				// Set texture properties.
-				pTexture->SetFileName(tex.name.c_str()); // Resource file is in current directory.
+				//pTexture->SetFileName(tex.name.c_str()); // Resource file is in current directory.
+				pTexture->SetFileName(ChangePostfixName(tex.name.c_str(), "png").c_str());
 				pTexture->SetTextureUse(FbxTexture::eStandard);
 				pTexture->SetMappingType(FbxTexture::eUV);
 				pTexture->SetMaterialUse(FbxFileTexture::eModelMaterial);
@@ -495,61 +685,92 @@ void ImportMz(const FbxString& lFilePath, FbxScene* pScene)
 
 		}
 
-	}
-
-	//骨骼
-	if (!aBoneData.empty()) {
-		FbxNode* pNodeSkeleton = FbxNode::Create(pScene, "Skeleton");
-		pScene->GetRootNode()->AddChild(pNodeSkeleton);
-		FbxSkeleton* lSkeletonRootAttribute = FbxSkeleton::Create(pScene, "SkeletonRoot");
-		lSkeletonRootAttribute->SetSkeletonType(FbxSkeleton::eRoot);
-		pNodeSkeleton->SetNodeAttribute(lSkeletonRootAttribute);    
-		pNodeSkeleton->LclTranslation.Set(FbxVector4(0.0, 0.0, 0.0));
+		//骨骼
+		FbxNode* pRootNode = NULL;
 		std::map<int, FbxNode*> mapNodeBones;
-		for (auto it = aBoneData.begin(); it != aBoneData.end(); it++) {
-			const BoneData& bone = *it;
-			FbxSkeleton* pBoneAttribute = FbxSkeleton::Create(pScene, bone.name.c_str());
-			pBoneAttribute->SetSkeletonType(FbxSkeleton::eLimbNode);
-			FbxNode* pBoneNode = FbxNode::Create(pScene, bone.name.c_str());
-			pBoneNode->SetNodeAttribute(pBoneAttribute);
-			pBoneNode->LclTranslation.Set(FbxVector4(bone.initTrans.d_x, bone.initTrans.d_y, bone.initTrans.d_z));
-			mapNodeBones[bone.objectId] = pBoneNode;
-			if (bone.parentId == -1) {
-				pNodeSkeleton->AddChild(pBoneNode);
-			}
-			else {
-				auto it1 = mapNodeBones.find(bone.objectId);
-				if (it1 != mapNodeBones.end()) {
-					it1->second->AddChild(pBoneNode);
+		if (!s_aBoneData.empty()) {
+			for (uint i = 0; i < s_aBoneData.size(); i++) {
+				const BoneData& bone = s_aBoneData[i];
+				FbxSkeleton* pBoneAttribute = FbxSkeleton::Create(s_pScene, bone.name.c_str());
+				if (bone.parentId == -1) {
+					pBoneAttribute->SetSkeletonType(FbxSkeleton::eRoot);
+				}
+				else {
+					pBoneAttribute->SetSkeletonType(FbxSkeleton::eLimbNode);
+					pBoneAttribute->Size.Set(1.0);
+				}
+				FbxString str_name = bone.name.c_str();
+				FbxNode* pBoneNode = FbxNode::Create(s_pScene, str_name);
+				pBoneNode->SetUserDataPtr((void*)bone.objectId);
+				pBoneNode->SetNodeAttribute(pBoneAttribute);
+				Vector3 pos = bone.initTrans;
+				if (bone.parentId != -1) {
+					pos = pos - s_aBoneData[bone.parentId].initTrans;
+				}
+				pBoneNode->LclTranslation.Set(FbxVector4(pos.d_x, pos.d_y, pos.d_z));
+				//Quaternion q = bone.initQuat;
+				//if (bone.parentId != -1) {
+				//	q = aBoneData[bone.parentId]->initQuat * q;
+				//}
+				//FbxQuaternion fq(q.x, q.y, q.z, q.w);
+				//FbxVector4 rot;
+				//rot.SetXYZ(fq);
+				//pBoneNode->LclRotation.Set(rot);
+				pBoneNode->LclScaling.Set(FbxVector4(bone.initScale.d_x, bone.initScale.d_y, bone.initScale.d_z));
+				mapNodeBones[bone.objectId] = pBoneNode;
+				auto it = mapNodeBones.find(bone.parentId);
+				if (it != mapNodeBones.end()) {
+					it->second->AddChild(pBoneNode);
+				}
+				else {
+					pRootNode = pBoneNode;
+					s_pScene->GetRootNode()->AddChild(pBoneNode);
 				}
 			}
 		}
+		 
+		BONE_WEIGHT bw;
+		for (uint i = 0; i < ms.vcount; i++) {
+			const _VertexData& vd = s_aVertexData[ms.vstart + i];
+			for (int j = 0; j < 4; j++) {
+				if (vd.bones[j] < s_aBoneData.size()) {
+					VERTEX_WEIGHT& vw = bw[vd.bones[j]];
+					vw[i] = vd.weights[j];
+				}
+			}
+		}
+
+		FbxSkin* pSkin = FbxSkin::Create(s_pScene, "");
+		pMesh->AddDeformer(pSkin);
+
+		SkinSkeleton(pSkin, pRootNode, bw);
+
+		if (idx == 0) {
+			ExportFbx_Ani(mapNodeBones);
+		}
+
+		string lFilePath = ChangePostfixName(s_strFilePath.Buffer(), "").c_str();
+		lFilePath = lFilePath + "_" + ms.name + ".fbx";
+
+		SaveScene(s_pSdkManager, s_pScene, lFilePath.c_str());
+
+		DestroySdkObjects(s_pSdkManager, true);
+
 	}
 
-	//权重
-
-	//动画
-
-	delete[] buf;
 }
 
-void ImportScene(const FbxString& lFilePath)
+void ImportScene()
 {
-	FbxManager* pSdkManager = NULL;
-	FbxScene* pScene = NULL;
-	InitializeSdkObjects(pSdkManager, pScene);
-	
-	ImportMz(lFilePath, pScene);
-
-	SaveScene(pSdkManager, pScene, ChangePostfixName(lFilePath.Buffer(), "fbx").c_str());
-
-	DestroySdkObjects(pSdkManager, true);
+	ImportMz();
+	ExportFbx_Mesh();
 }
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	//ImportScene("Res/MONKEYMAN/MONKEYMAN.MZ");
-	ImportScene("Res/SWORDSMAN/Swordsman.MZ");
+	//s_strFilePath = "Res/MONKEYMAN/MONKEYMAN.MZ";
+	s_strFilePath = "Res/SWORDSMAN/Swordsman.MZ";
+	ImportScene();
 	return 0;
 }
 

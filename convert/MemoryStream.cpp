@@ -1,6 +1,5 @@
 #include "stdafx.h"
 #include "MemoryStream.h"
-#include "FileStream.h"
 
 /// 释放流对象
 void MemoryStream::release()
@@ -267,14 +266,6 @@ bool MemoryStream::rename(const char* newName)
 
 bool MemoryStream::save(const char* newName)
 {
-	if (m_buffer)
-	{
-		FileStream fs(newName);
-		bool ret = (fs.open("wb") && fs.write(m_buffer, m_fileSize) && fs.close());
-		fs.close();
-		if (ret)
-			return true;
-	}
 	return false;
 }
 

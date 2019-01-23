@@ -36,9 +36,6 @@
     <ClInclude Include="DataChunk.h">
       <Filter>源文件</Filter>
     </ClInclude>
-    <ClInclude Include="FileStream.h">
-      <Filter>源文件</Filter>
-    </ClInclude>
     <ClInclude Include="MemoryStream.h">
       <Filter>源文件</Filter>
     </ClInclude>
@@ -66,9 +63,6 @@
       <Filter>源文件</Filter>
     </ClCompile>
     <ClCompile Include="DataChunk.cpp">
-      <Filter>头文件</Filter>
-    </ClCompile>
-    <ClCompile Include="FileStream.cpp">
       <Filter>头文件</Filter>
     </ClCompile>
     <ClCompile Include="MemoryStream.cpp">

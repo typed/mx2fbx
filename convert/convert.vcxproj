@@ -88,7 +88,6 @@
     <ClInclude Include="Common.h" />
     <ClInclude Include="d3dcommon.h" />
     <ClInclude Include="DataChunk.h" />
-    <ClInclude Include="FileStream.h" />
     <ClInclude Include="GeometryUtility.h" />
     <ClInclude Include="MemoryStream.h" />
     <ClInclude Include="MzHeader.h" />
@@ -101,7 +100,6 @@
     <ClCompile Include="convert.cpp" />
     <ClCompile Include="d3dcommon.cpp" />
     <ClCompile Include="DataChunk.cpp" />
-    <ClCompile Include="FileStream.cpp" />
     <ClCompile Include="GeometryUtility.cxx" />
     <ClCompile Include="MemoryStream.cpp" />
     <ClCompile Include="stdafx.cpp" />
