@@ -21,20 +21,53 @@ struct Vector3
 	inline Vector3 operator - ( const Vector3& rkVector ) const
 	{
 		Vector3 kDiff;
-
 		kDiff.d_x = d_x - rkVector.d_x;
 		kDiff.d_y = d_y - rkVector.d_y;
 		kDiff.d_z = d_z - rkVector.d_z;
-
+		return kDiff;
+	}
+	inline Vector3 operator + ( const Vector3& rkVector ) const
+	{
+		Vector3 kDiff;
+		kDiff.d_x = d_x + rkVector.d_x;
+		kDiff.d_y = d_y + rkVector.d_y;
+		kDiff.d_z = d_z + rkVector.d_z;
 		return kDiff;
 	}
 };
 
 struct Quaternion
 {
-	float d_x, d_y, d_z, d_w;
-	Quaternion(void) { d_x = d_y = d_z = d_w = 0.f; }
-	Quaternion(float x, float y, float z, float w) : d_x(x), d_y(y), d_z(z), d_w(w) {}
+	float x, y, z, w;
+	Quaternion(void) { x = y = z = w = 0.f; }
+	Quaternion(float _x, float _y, float _z, float _w) : x(_x), y(_y), z(_z), w(_w) {}
+	inline Quaternion operator* (const Quaternion& rkQ) const
+	{
+		// NOTE:  Multiplication is not generally commutative, so in most
+		// cases p*q != q*p.
+
+		return Quaternion
+			(
+			w * rkQ.x + x * rkQ.w + y * rkQ.z - z * rkQ.y,
+			w * rkQ.y + y * rkQ.w + z * rkQ.x - x * rkQ.z,
+			w * rkQ.z + z * rkQ.w + x * rkQ.y - y * rkQ.x,
+			w * rkQ.w - x * rkQ.x - y * rkQ.y - z * rkQ.z
+			);
+	}
+	inline Quaternion Quaternion::Inverse () const
+	{
+		float fNorm = w*w+x*x+y*y+z*z;
+		if ( fNorm > 0.f )
+		{
+			float fInvNorm = 1.f / fNorm;
+			return Quaternion(-x*fInvNorm,-y*fInvNorm,-z*fInvNorm,w*fInvNorm);
+		}
+		else
+		{
+			// return an invalid result to flag the error
+			return Quaternion(0.f,0.f,0.f,0.f);
+		}
+	}
 };
 
 struct Matrix4

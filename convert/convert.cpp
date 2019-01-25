@@ -470,6 +470,7 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 	//¶¯»­
 	for (vector<MODELANIMATION>::iterator it = s_aAnimations.begin(); it != s_aAnimations.end(); it++) {
 		const MODELANIMATION& ma = *it;
+		Log("Ani Name=%s\n", ma.name.c_str());
 		FbxTime lTime;
 		int lKeyIndex = 0;
 		FbxAnimStack* pAnimStack = FbxAnimStack::Create(s_pScene, ma.name.c_str());
@@ -480,7 +481,7 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 			auto it = mapNodeBones.find(i);
 			if (it != mapNodeBones.end()) {
 				FbxNode* pBone = it->second;
-
+				Log("Ani bone=(%d,%s)\n", i, bone.name.c_str());
 				//Æ½ÒÆ
 				FbxAnimCurve* pCurveTransX = pBone->LclTranslation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
 				FbxAnimCurve* pCurveTransY = pBone->LclTranslation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
@@ -491,15 +492,22 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 					pCurveTransZ->KeyModifyBegin();
 					for (size_t j = 0; j < bone.keyframesTranslation.size(); j++) {
 						const ModelKeyframeTranslation& keyfrm = bone.keyframesTranslation[j];
+						Vector3 posInit = bone.initTrans;
+						if (bone.parentId != -1) {
+							posInit = posInit - s_aBoneData[bone.parentId].initTrans;
+						}
+						Vector3 pos(keyfrm.v[0], keyfrm.v[1], keyfrm.v[2]);
+						pos = pos + posInit;
+						//Log("KeyFrame time=%d translation=(%f,%f,%f)\n", keyfrm.time, pos.d_x, pos.d_y, pos.d_z);
 						lTime.SetSecondDouble(keyfrm.time/1000.f);
 						lKeyIndex = pCurveTransX->KeyAdd(lTime);
-						pCurveTransX->KeySetValue(lKeyIndex, keyfrm.v[0]);
+						pCurveTransX->KeySetValue(lKeyIndex, pos.d_x);
 						pCurveTransX->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
 						lKeyIndex = pCurveTransY->KeyAdd(lTime);
-						pCurveTransY->KeySetValue(lKeyIndex, keyfrm.v[1]);
+						pCurveTransY->KeySetValue(lKeyIndex, pos.d_y);
 						pCurveTransY->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
 						lKeyIndex = pCurveTransZ->KeyAdd(lTime);
-						pCurveTransZ->KeySetValue(lKeyIndex, keyfrm.v[2]);
+						pCurveTransZ->KeySetValue(lKeyIndex, pos.d_z);
 						pCurveTransZ->KeySetInterpolation(lKeyIndex, FbxAnimCurveDef::eInterpolationCubic);
 					}
 					pCurveTransX->KeyModifyEnd();
@@ -518,7 +526,27 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 					for (size_t j = 0; j < bone.keyframesRotation.size(); j++) {
 						const ModelKeyframeRotation& keyfrm = bone.keyframesRotation[j];
 						lTime.SetSecondDouble(keyfrm.time/1000.f);
+
+						FbxQuaternion q1;
+						FbxQuaternion qInit(bone.initQuat.x, bone.initQuat.y, bone.initQuat.z, bone.initQuat.w);
+						if (bone.parentId != -1) {
+							const BoneData& bone_parent = s_aBoneData[bone.parentId];
+							FbxQuaternion q1_parent(bone_parent.initQuat.x, bone_parent.initQuat.y, bone_parent.initQuat.z, bone_parent.initQuat.w);
+							q1_parent.Inverse();
+							q1 = qInit * q1_parent;
+						}
+
 						FbxQuaternion fq(keyfrm.q[0], keyfrm.q[1], keyfrm.q[2], keyfrm.q[3]);
+						FbxQuaternion qInitInverse = qInit;
+						qInitInverse.Inverse();
+						//if (bone.parentId != -1) {
+						//	fq = qInitInverse * qInit;
+						//}
+						//fq = fq * qInitInverse;
+						//fq = fq * q1;
+						//fq = fq + qInitInverse;
+						//fq.Normalize();
+
 						FbxVector4 rot; rot.SetXYZ(fq);
 						lKeyIndex = pCurveRotX->KeyAdd(lTime);
 						pCurveRotX->KeySetValue(lKeyIndex, rot[0]);
@@ -536,6 +564,7 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 				}
 
 				//Ëõ·Å
+				/*
 				FbxAnimCurve* pCurveSclX = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_X, true);
 				FbxAnimCurve* pCurveSclY = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Y, true);
 				FbxAnimCurve* pCurveSclZ = pBone->LclRotation.GetCurve(pAnimLayer, FBXSDK_CURVENODE_COMPONENT_Z, true);
@@ -560,6 +589,7 @@ void ExportFbx_Ani(std::map<int, FbxNode*>& mapNodeBones)
 					pCurveSclY->KeyModifyEnd();
 					pCurveSclZ->KeyModifyEnd();
 				}
+				*/
 
 			}
 		}
@@ -686,19 +716,19 @@ void ExportFbx_Mesh()
 		}
 
 		//¹Ç÷À
-		FbxNode* pRootNode = NULL;
+		FbxSkeleton* pBoneAttribute = FbxSkeleton::Create(s_pScene, "Root");
+		pBoneAttribute->SetSkeletonType(FbxSkeleton::eRoot);
+		FbxNode* pRootNode = FbxNode::Create(s_pScene, "Root");
+		pRootNode->SetUserDataPtr((void*)(-1));
+		pRootNode->SetNodeAttribute(pBoneAttribute);
+		s_pScene->GetRootNode()->AddChild(pRootNode);
 		std::map<int, FbxNode*> mapNodeBones;
 		if (!s_aBoneData.empty()) {
 			for (uint i = 0; i < s_aBoneData.size(); i++) {
 				const BoneData& bone = s_aBoneData[i];
 				FbxSkeleton* pBoneAttribute = FbxSkeleton::Create(s_pScene, bone.name.c_str());
-				if (bone.parentId == -1) {
-					pBoneAttribute->SetSkeletonType(FbxSkeleton::eRoot);
-				}
-				else {
-					pBoneAttribute->SetSkeletonType(FbxSkeleton::eLimbNode);
-					pBoneAttribute->Size.Set(1.0);
-				}
+				pBoneAttribute->SetSkeletonType(FbxSkeleton::eLimbNode);
+				pBoneAttribute->Size.Set(1.0);
 				FbxString str_name = bone.name.c_str();
 				FbxNode* pBoneNode = FbxNode::Create(s_pScene, str_name);
 				pBoneNode->SetUserDataPtr((void*)bone.objectId);
@@ -708,14 +738,17 @@ void ExportFbx_Mesh()
 					pos = pos - s_aBoneData[bone.parentId].initTrans;
 				}
 				pBoneNode->LclTranslation.Set(FbxVector4(pos.d_x, pos.d_y, pos.d_z));
-				//Quaternion q = bone.initQuat;
-				//if (bone.parentId != -1) {
-				//	q = aBoneData[bone.parentId]->initQuat * q;
-				//}
-				//FbxQuaternion fq(q.x, q.y, q.z, q.w);
-				//FbxVector4 rot;
-				//rot.SetXYZ(fq);
-				//pBoneNode->LclRotation.Set(rot);
+				
+				FbxQuaternion fq(bone.initQuat.x, bone.initQuat.y, bone.initQuat.z, bone.initQuat.w);
+				if (bone.parentId != -1) {
+					const BoneData& bone_parent = s_aBoneData[bone.parentId];
+					FbxQuaternion q_parent(bone_parent.initQuat.x, bone_parent.initQuat.y, bone_parent.initQuat.z, bone_parent.initQuat.w);
+					q_parent.Inverse();
+					fq = fq * q_parent;
+				}
+				FbxVector4 rot;
+				rot.SetXYZ(fq);
+				pBoneNode->LclRotation.Set(rot);
 				pBoneNode->LclScaling.Set(FbxVector4(bone.initScale.d_x, bone.initScale.d_y, bone.initScale.d_z));
 				mapNodeBones[bone.objectId] = pBoneNode;
 				auto it = mapNodeBones.find(bone.parentId);
@@ -723,8 +756,7 @@ void ExportFbx_Mesh()
 					it->second->AddChild(pBoneNode);
 				}
 				else {
-					pRootNode = pBoneNode;
-					s_pScene->GetRootNode()->AddChild(pBoneNode);
+					pRootNode->AddChild(pBoneNode);
 				}
 			}
 		}
@@ -768,8 +800,8 @@ void ImportScene()
 
 int _tmain(int argc, _TCHAR* argv[])
 {
-	//s_strFilePath = "Res/MONKEYMAN/MONKEYMAN.MZ";
-	s_strFilePath = "Res/SWORDSMAN/Swordsman.MZ";
+	s_strFilePath = "Res/MONKEYMAN/MONKEYMAN.MZ";
+	//s_strFilePath = "Res/SWORDSMAN/Swordsman.MZ";
 	ImportScene();
 	return 0;
 }
